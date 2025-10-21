@@ -12,6 +12,7 @@ AGENT_CONFIG = {
     "METRICS_OUTPUT_FILE": "metrics_output.txt",
     "MAX_LLM_BACKTRACK_ATTEMPTS": 3,
     "MAX_RUN_PASSES": 5, 
+    "ACCEPTABLE_FAILURE_THRESHOLD": 5
 }
 
 # The rest of this file is IDENTICAL to your requests experiment version

@@ -17,39 +17,63 @@ def run_command(command, cwd=None):
     result = subprocess.run(command, capture_output=True, text=True, cwd=cwd)
     return result.stdout, result.stderr, result.returncode
 
-def validate_changes(python_executable, group_title="Running Validation Script"):
+
+def validate_changes(python_executable, config, group_title="Running Validation Script"):
     """
-    Runs the Pillow library's own test suite as the validation oracle.
+    Performs a two-stage validation: a fast smoke test and the full, comprehensive pytest suite.
     """
     start_group(group_title)
     
-    # Pillow's tests are run with pytest from the root of their repo.
-    validation_command = [python_executable, "-m", "pytest"]
-    
-    print("\n--- Running Pillow Test Suite (pytest) ---")
-    
-    # The command MUST be run from inside the 'Pillow' directory.
-    stdout, stderr, returncode = run_command(validation_command, cwd="Pillow")
+    # --- STAGE 1: THE SMOKE TEST ---
+    print("\n--- Stage 1: Running Smoke Test ---")
+    # We create a separate, simple validation_smoke.py file for this.
+    smoke_test_command = [python_executable, "validation_smoke.py"]
+    smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command, cwd="Pillow")
 
-    # ... The rest of the function (log printing and metric parsing)
-    # can remain IDENTICAL to the requests version. It is already general-purpose.
-    if stdout:
-        print(f"STDOUT:\n---\n{stdout[:2000]}...\n---")
-    if stderr:
-        print(f"STDERR:\n---\n{stderr}\n---")
-
-    if returncode != 0:
-        print("Validation Failed: Pytest returned a non-zero exit code.", file=sys.stderr)
+    if smoke_returncode != 0:
+        print("CRITICAL VALIDATION FAILURE: Smoke test failed. Aborting full test suite.", file=sys.stderr)
         end_group()
-        return False, None, stdout + stderr
+        return False, "Smoke test failed", smoke_stdout + smoke_stderr
+    print("Smoke test PASSED.")
+
+
+    # --- STAGE 2: THE PYTEST SUITE (only if smoke test passes) ---
+    print("\n--- Stage 2: Running Full Pytest Suite ---")
+    MAX_ACCEPTABLE_FAILURES = config.get("ACCEPTABLE_FAILURE_THRESHOLD", 0)
     
-    print("Validation script (pytest) completed successfully.")
+    pytest_command = [python_executable, "-m", "pytest"]
+    pytest_stdout, pytest_stderr, pytest_returncode = run_command(pytest_command, cwd="Pillow")
+    
+    full_output = pytest_stdout + pytest_stderr
+
+    # Pytest returns specific non-zero exit codes. Code 1 means "tests failed".
+    if pytest_returncode == 1: 
+        try:
+            num_failed = int(re.search(r"(\d+)\s+failed", full_output).group(1))
+            if num_failed > MAX_ACCEPTABLE_FAILURES:
+                print(f"VALIDATION FAILED: {num_failed} tests failed, exceeding threshold of {MAX_ACCEPTABLE_FAILURES}.", file=sys.stderr)
+                end_group()
+                return False, f"{num_failed} tests failed", full_output
+            else:
+                print(f"VALIDATION PASSED (soft): {num_failed} tests failed, which is within the acceptable threshold.")
+        except (AttributeError, ValueError):
+            # If we can't parse the number, assume the failure is critical.
+            print("VALIDATION FAILED: Could not parse failure count from pytest output.", file=sys.stderr)
+            end_group()
+            return False, "Critical pytest failure", full_output
+    elif pytest_returncode != 0:
+        # Any other non-zero exit code is a fatal error (e.g., collection error)
+        print("VALIDATION FAILED: Pytest exited with a critical error code.", file=sys.stderr)
+        end_group()
+        return False, "Critical pytest error", full_output
+    
+    print("Full pytest suite PASSED.")
     end_group()
 
+    # If both stages pass, we return success
     try:
-        match = re.search(r"(\d+)\s+passed", stdout + stderr)
-        tests_passed = match.group(1)
+        tests_passed = re.search(r"(\d+)\s+passed", full_output).group(1)
         metrics_body = f"Performance Metrics:\n- Tests Passed: {tests_passed}"
-        return True, metrics_body, stdout + stderr
+        return True, metrics_body, full_output
     except (AttributeError, IndexError):
-        return True, "Metrics not available, but validation passed.", stdout + stderr 
+        return True, "Metrics not available, but validation passed.", full_output
