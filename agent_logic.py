@@ -8,7 +8,7 @@ import ast
 import shutil
 import re
 import json
-from google.api_core.exceptions import ResourceExhausted, NotFound
+from google.api_core.exceptions import ResourceExhausted
 from pypi_simple import PyPISimple
 from packaging.version import parse as parse_version
 from agent_utils import start_group, end_group, run_command, validate_changes
@@ -22,24 +22,17 @@ class DependencyAgent:
         self.primary_packages = self._load_primary_packages()
         self.llm_available = True
         self.usage_scores = self._calculate_risk_scores()
+
+        # *** THE FIX IS HERE: Initialize the missing attribute. ***
         self.exclusions_from_this_run = set()
 
-    def _calculate_risk_scores(self, custom_package_list=None):
-        repo_dir = Path('.')
-        if "/" in str(self.requirements_path):
-            repo_dir = self.requirements_path.parent
-
-        if custom_package_list:
-            start_group("Calculating Risk Scores for Custom Package List")
-            scores = {self._get_package_name_from_spec(pkg): self.usage_scores.get(self._get_package_name_from_spec(pkg), 1) for pkg in custom_package_list}
-            print("Dynamic risk scores calculated for healing.")
-            end_group()
-            return scores
-            
+    def _calculate_risk_scores(self):
         start_group("Analyzing Codebase for Update Risk")
         scores = {}
-        for py_file in repo_dir.rglob('*.py'):
-            if any(part in str(py_file) for part in ['temp_venv', 'final_venv', 'bootstrap_venv']): continue
+        repo_root = Path('.')
+        for py_file in repo_root.rglob('*.py'):
+            if any(part in str(py_file) for part in ['temp_venv', 'final_venv', 'bootstrap_venv', 'agent_logic.py', 'agent_utils.py', 'dependency_agent.py']):
+                continue
             try:
                 with open(py_file, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -47,10 +40,10 @@ class DependencyAgent:
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Import):
                             for alias in node.names:
-                                module_name = self._get_package_name_from_spec(alias.name.split('.')[0])
+                                module_name = self._get_package_name_from_spec(alias.name)
                                 scores[module_name] = scores.get(module_name, 0) + 1
                         elif isinstance(node, ast.ImportFrom) and node.module:
-                            module_name = self._get_package_name_from_spec(node.module.split('.')[0])
+                            module_name = self._get_package_name_from_spec(node.module)
                             scores[module_name] = scores.get(module_name, 0) + 1
             except Exception: continue
         
@@ -70,21 +63,19 @@ class DependencyAgent:
             return {self._get_package_name_from_spec(line.strip()) for line in f if line.strip() and not line.startswith('#')}
 
     def _get_requirements_state(self):
-        if not self.requirements_path.exists():
-             sys.exit(f"CRITICAL ERROR: Requirements file not found at {self.requirements_path}")
+        if not self.requirements_path.exists(): sys.exit(f"Error: {self.config['REQUIREMENTS_FILE']} not found.")
         with open(self.requirements_path, "r") as f:
-            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+            lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
         return all('==' in line for line in lines), lines
 
     def _bootstrap_unpinned_requirements(self):
-        # This function contains the advanced healing logic. If the initial file is solvable,
-        # it will be simple. If not, the healing will trigger.
         start_group("BOOTSTRAP: Establishing a Stable Baseline")
         print("Unpinned requirements detected. Creating and validating a stable baseline...")
         venv_dir = Path("./bootstrap_venv")
         if venv_dir.exists(): shutil.rmtree(venv_dir)
         venv.create(venv_dir, with_pip=True)
         
+        # This function now uses the new, robust helper function
         success, result, error_log = self._run_bootstrap_and_validate(venv_dir, self.requirements_path)
         
         if success:
@@ -92,37 +83,61 @@ class DependencyAgent:
             with open(self.requirements_path, "w") as f: f.write(result["packages"])
             start_group("View new requirements.txt content"); print(result["packages"]); end_group()
             if result["metrics"] and "not available" not in result["metrics"]:
-                print(f"\n{'='*70}\n=== BOOTSTRAP SUCCESSFUL... ===\n" + "\n".join([f"  {line}" for line in result['metrics'].split('\n')]) + f"\n{'='*70}\n")
+                print(f"\n{'='*70}\n=== BOOTSTRAP SUCCESSFUL: METRICS FOR THE NEW BASELINE ===\n" + "\n".join([f"  {line}" for line in result['metrics'].split('\n')]) + f"\n{'='*70}\n")
                 with open(self.config["METRICS_OUTPUT_FILE"], "w") as f: f.write(result["metrics"])
             end_group()
             return
-        
-        # This part will only run if the initial file is un-installable or fails validation
+
+        # --- The rest of the new, resilient bootstrap logic follows ---
         print("\nCRITICAL: Initial baseline failed validation. Initiating Bootstrap Healing Protocol.", file=sys.stderr)
         start_group("View Initial Baseline Failure Log"); print(error_log); end_group()
-        # ... (healing logic would go here)
-        sys.exit("CRITICAL ERROR: Bootstrap failed and healing is not yet fully implemented for this case.")
+        
+        python_executable = str((venv_dir / "bin" / "python").resolve())
+        initial_failing_packages_list, _, _ = run_command([python_executable, "-m", "pip", "freeze"])
+        initial_failing_packages = self._prune_pip_freeze(initial_failing_packages_list).split('\n')
 
+        healed_packages_str = self._attempt_llm_bootstrap_heal(initial_failing_packages, error_log)
+        
+        if not healed_packages_str:
+            print("\nINFO: LLM healing failed. Falling back to Deterministic Downgrade Protocol.")
+            healed_packages_str = self._attempt_deterministic_bootstrap_heal(initial_failing_packages)
+
+        if healed_packages_str:
+            print("\nSUCCESS: Bootstrap Healing Protocol found a stable baseline.")
+            with open(self.requirements_path, "w") as f: f.write(healed_packages_str)
+            start_group("View Healed and Pinned requirements.txt"); print(healed_packages_str); end_group()
+        else:
+            sys.exit("CRITICAL ERROR: All bootstrap healing attempts failed. Cannot establish a stable baseline.")
+        end_group()
     def _run_bootstrap_and_validate(self, venv_dir, requirements_source):
+        """
+        Installs a set of requirements into a venv and runs the validation script.
+        This is a core helper used by both the initial bootstrap and the healing protocols.
+        """
+        # THE FIX IS HERE: Use .resolve() to get an absolute path for robustness.
         python_executable = str((venv_dir / "bin" / "python").resolve())
         
+        # This function is smart: it can take a file path OR a list of packages.
         if isinstance(requirements_source, (Path, str)):
             pip_command = [python_executable, "-m", "pip", "install", "-r", str(requirements_source)]
-        else:
+        else: # It's a list of packages, so we write a temporary file.
             temp_reqs_path = venv_dir / "temp_reqs.txt"
-            with open(temp_reqs_path, "w") as f: f.write("\n".join(requirements_source))
+            with open(temp_reqs_path, "w") as f:
+                f.write("\n".join(requirements_source))
             pip_command = [python_executable, "-m", "pip", "install", "-r", str(temp_reqs_path)]
             
         _, stderr_install, returncode = run_command(pip_command)
         if returncode != 0:
             return False, None, f"Failed to install dependencies. Error: {stderr_install}"
 
+        # Now, the absolute path is passed to validate_changes.
         success, metrics, validation_output = validate_changes(python_executable, group_title="Running Validation on New Baseline")
         if not success:
             return False, None, validation_output
             
         installed_packages, _, _ = run_command([python_executable, "-m", "pip", "freeze"])
         return True, {"metrics": metrics, "packages": self._prune_pip_freeze(installed_packages)}, None
+
 
     def run(self):
         if os.path.exists(self.config["METRICS_OUTPUT_FILE"]): os.remove(self.config["METRICS_OUTPUT_FILE"])
@@ -143,6 +158,8 @@ class DependencyAgent:
             pass_num += 1
             start_group(f"UPDATE PASS {pass_num}/{self.config['MAX_RUN_PASSES']} (Constraints: {dynamic_constraints})")
             
+            # *** THE FIX IS HERE (PART 1): Create the baseline file for this pass. ***
+            # This creates a safe copy of the requirements at the start of the pass.
             pass_baseline_reqs_path = Path(f"./pass_{pass_num}_baseline_reqs.txt")
             shutil.copy(self.requirements_path, pass_baseline_reqs_path)
             
@@ -169,7 +186,7 @@ class DependencyAgent:
                 if pass_num == 1 and not self.exclusions_from_this_run: print("\nAll dependencies are up-to-date.")
                 else: print("\nNo further updates possible. System has converged.")
                 end_group()
-                if pass_baseline_reqs_path.exists(): pass_baseline_reqs_path.unlink()
+                if pass_baseline_reqs_path.exists(): pass_baseline_reqs_path.unlink() # Cleanup
                 break
             
             packages_to_update.sort(key=lambda p: self._calculate_update_risk(p[0], p[1], p[2]), reverse=True)
@@ -185,9 +202,13 @@ class DependencyAgent:
                 print(f"\n" + "-"*80); print(f"PULSE: [PASS {pass_num} | ATTEMPT {i+1}/{total_updates_in_plan}] Processing '{package}'"); print(f"PULSE: Changed packages this pass so far: {changed_packages_this_pass}"); print("-"*80)
                 is_primary = self._get_package_name_from_spec(package) in self.primary_packages
                 
+                # *** THE FIX IS HERE (PART 2): Call the healing function with all correct arguments. ***
                 success, reason, learned_constraint = self.attempt_update_with_healing(
-                    package=package, current_version=current_ver, target_version=target_ver, 
-                    is_primary=is_primary, dynamic_constraints=dynamic_constraints, 
+                    package=package, 
+                    current_version=current_ver, 
+                    target_version=target_ver, 
+                    is_primary=is_primary, 
+                    dynamic_constraints=dynamic_constraints, 
                     baseline_reqs_path=pass_baseline_reqs_path,
                     changed_packages_this_pass=changed_packages_this_pass
                 )
@@ -205,8 +226,10 @@ class DependencyAgent:
                         dynamic_constraints.append(learned_constraint)
             
             if changed_packages_this_pass:
+                # Use the new helper to apply all changes at once
                 self._apply_pass_updates(pass_successful_updates, pass_baseline_reqs_path)
 
+            # *** THE FIX IS HERE (PART 3): Clean up the temporary baseline file. ***
             if pass_baseline_reqs_path.exists():
                 pass_baseline_reqs_path.unlink()
             
@@ -221,6 +244,10 @@ class DependencyAgent:
             self._run_final_health_check()
             
     def _apply_pass_updates(self, successful_updates, baseline_reqs_path):
+        """
+        Takes the successful updates from a pass and creates a new, frozen requirements.txt.
+        This is the commit part of the transactional update logic.
+        """
         print("\nApplying successful changes from this pass...")
         venv_dir = Path("./temp_venv")
         if venv_dir.exists(): shutil.rmtree(venv_dir)
@@ -237,9 +264,11 @@ class DependencyAgent:
         with open(temp_reqs_path, "w") as f_write:
             f_write.write("\n".join(lines))
         
+        # Install the full updated set and freeze it to capture any new transitive dependencies correctly
         _, stderr, returncode = run_command([python_executable, "-m", "pip", "install", "-r", str(temp_reqs_path)])
         if returncode != 0:
             print(f"CRITICAL: Failed to install combined updates at end of pass. Error: {stderr}", file=sys.stderr)
+            # If the final combination fails, we revert to the baseline from the start of the pass for safety.
             shutil.copy(baseline_reqs_path, self.requirements_path)
             return
 
