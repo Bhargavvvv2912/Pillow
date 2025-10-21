@@ -3,6 +3,7 @@
 import subprocess
 import re
 import sys
+from pathlib import Path
 
 def start_group(title):
     print(f"\n::group::{title}")
@@ -26,8 +27,10 @@ def validate_changes(python_executable, config, group_title="Running Validation 
     
     # --- STAGE 1: THE SMOKE TEST ---
     print("\n--- Stage 1: Running Smoke Test ---")
-    # We create a separate, simple validation_smoke.py file for this.
-    smoke_test_command = [python_executable, "validation_smoke.py"]
+    smoke_script_path = str(Path("validation_smoke.py").resolve())
+    smoke_test_command = [python_executable, smoke_script_path]
+    # We still run this from inside the 'Pillow' directory.
+    smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command, cwd="Pillow")
     smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command, cwd="Pillow")
 
     if smoke_returncode != 0:
