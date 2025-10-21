@@ -7,7 +7,7 @@ from agent_logic import DependencyAgent
 
 # --- Configuration for the scikit-learn Experiment ---
 AGENT_CONFIG = {
-    "REQUIREMENTS_FILE": "generated-requirements.txt.txt",
+    "REQUIREMENTS_FILE": "generated-requirements.txt",
     "PRIMARY_REQUIREMENTS_FILE": "primary_requirements.txt", # We'll use an empty one
     "METRICS_OUTPUT_FILE": "metrics_output.txt",
     "MAX_LLM_BACKTRACK_ATTEMPTS": 3,
