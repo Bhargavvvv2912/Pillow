@@ -20,7 +20,6 @@ jobs:
       - name: Clone Pillow Repository
         run: git clone https://github.com/python-pillow/Pillow.git
 
-      # --- Pillow-Specific Step 1: Install System Build Dependencies ---
       - name: Install System Dependencies for Pillow Build
         run: |
           sudo apt-get update
@@ -31,17 +30,61 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pip-tools
-        run: python -m pip install pip-tools
+      - name: Install pip-tools and TOML Parser
+        # These are the tools needed for our automated dependency resolution
+        run: python -m pip install pip-tools toml
 
-      # --- Pillow-Specific Step 2: Generate requirements.txt ---
-      - name: Generate requirements.txt using pip-compile
+      # --- THIS IS THE FINAL, ARCHITECTURALLY CORRECT DEPENDENCY RESOLUTION STEP ---
+      - name: Generate a Complete requirements.in and Compile
+        id: generate-reqs
         run: |
-          echo "Resolving Pillow's test dependencies from pyproject.toml..."
-          echo "-e ./Pillow[tests]" > requirements.in
-          # Save the output to the location the agent expects
+          echo "Dynamically resolving Build, Core, and Test dependencies from pyproject.toml..."
+
+          # This embedded Python script automates the discovery process.
+          python -c "
+          import toml
+          from pathlib import Path
+
+          # Define the target project directory
+          project_dir = Path('./Pillow')
+          toml_path = project_dir / 'pyproject.toml'
+
+          print(f'Reading dependencies from {toml_path}')
+          with open(toml_path, 'r') as f:
+              data = toml.load(f)
+
+          # 1. Get the Build System Dependencies (e.g., setuptools, pybind11)
+          build_deps = data.get('build-system', {}).get('requires', [])
+          print(f'Found {len(build_deps)} build-system dependencies.')
+
+          # 2. Get the Core Project Dependencies (Pillow has none, but this makes it generic)
+          core_deps = data.get('project', {}).get('dependencies', [])
+          print(f'Found {len(core_deps)} core dependencies.')
+
+          # 3. Get the Specific 'tests' Optional Dependencies (e.g., pytest)
+          test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
+          print(f'Found {len(test_deps)} test dependencies.')
+
+          # --- Construct the requirements.in file ---
+          with open('requirements.in', 'w') as f:
+              # This line is crucial: it tells pip-compile to include the project itself.
+              # This implicitly handles the core dependencies.
+              f.write(f'-e ./{project_dir.name}\n')
+              
+              # Add the build-system and test dependencies
+              for dep in build_deps + test_deps:
+                  f.write(f'{dep}\n')
+          "
+
+          echo "--- Generated a complete temporary requirements.in file: ---"
+          cat requirements.in
+          echo "--------------------------------------------------------"
+          
+          # Now, compile this complete and explicit input file.
           pip-compile --resolver=backtracking --output-file generated-requirements.txt requirements.in
 
+          echo "Generated the final, complete requirements.txt file for the agent."
+          
       - name: Cache pip packages
         uses: actions/cache@v3
         with:
@@ -50,6 +93,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # The rest of the workflow is standard and correct
       - name: Install agent dependencies
         run: pip install google-generativeai pypi-simple packaging
 
@@ -64,7 +108,6 @@ jobs:
           git config --global user.email 'aura-agent@users.noreply.github.com'
           
           TARGET_FILE="generated-requirements.txt"
-          
           git add $TARGET_FILE
           if git diff-index --quiet HEAD; then
             echo "No dependency changes to commit."
