@@ -540,7 +540,14 @@ class DependencyAgent:
             
     def _prune_pip_freeze(self, freeze_output):
         lines = freeze_output.strip().split('\n')
-        return "\n".join([line for line in lines if '==' in line and not line.startswith('-e')])
+        
+        # *** THE FIX IS HERE: We MUST keep both `==` lines AND editable `-e` lines. ***
+        pruned_lines = [
+            line for line in lines 
+            if ('==' in line and not line.startswith('-e')) or line.startswith('-e')
+        ]
+        
+        return "\n".join(pruned_lines)
 
     def _ask_llm_for_root_cause(self, package, error_message):
         if not self.llm_available: return {}
