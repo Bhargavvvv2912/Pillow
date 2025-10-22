@@ -63,10 +63,28 @@ class DependencyAgent:
             return {self._get_package_name_from_spec(line.strip()) for line in f if line.strip() and not line.startswith('#')}
 
     def _get_requirements_state(self):
-        if not self.requirements_path.exists(): sys.exit(f"Error: {self.config['REQUIREMENTS_FILE']} not found.")
+        if not self.requirements_path.exists():
+            sys.exit(f"CRITICAL ERROR: Requirements file not found at {self.requirements_path}")
+
         with open(self.requirements_path, "r") as f:
-            lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-        return all('==' in line for line in lines), lines
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+        
+        if not lines: # An empty requirements file is trivially "pinned".
+            return True, []
+        pinned_pattern = re.compile(r'^[a-zA-Z0-9\-_\[\]]+==.+$')
+        def is_unpinned(line):
+            if line.startswith('-e'):
+                return False # Editable installs are considered "pinned" for our purposes
+            if pinned_pattern.match(line):
+                return False # It's a clean, pinned requirement
+            
+            # If it's not an editable install and not a clean pin, it's unpinned.
+            return True
+
+        # If any single line is unpinned, the entire file is considered unpinned.
+        is_fully_pinned = not any(is_unpinned(line) for line in lines)
+
+        return is_fully_pinned, lines
 
     def _bootstrap_unpinned_requirements(self):
         start_group("BOOTSTRAP: Establishing a Stable Baseline")
