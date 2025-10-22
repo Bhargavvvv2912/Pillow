@@ -20,21 +20,17 @@ def run_command(command, cwd=None):
 
 
 def validate_changes(python_executable, config, group_title="Running Validation Script"):
-    """
-    Performs a two-stage validation: a fast smoke test and the full, comprehensive pytest suite.
-    """
     start_group(group_title)
-    
-    # --- STAGE 1: THE SMOKE TEST ---
     print("\n--- Stage 1: Running Smoke Test ---")
     smoke_script_path = str(Path("validation_smoke.py").resolve())
     smoke_test_command = [python_executable, smoke_script_path]
-    # We still run this from inside the 'Pillow' directory.
-    smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command, cwd="Pillow")
-    smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command, cwd="Pillow")
+    
+    # NO cwd argument. Run from the root.
+    smoke_stdout, smoke_stderr, smoke_returncode = run_command(smoke_test_command)
 
     if smoke_returncode != 0:
-        print("CRITICAL VALIDATION FAILURE: Smoke test failed. Aborting full test suite.", file=sys.stderr)
+        print("CRITICAL VALIDATION FAILURE: Smoke test failed.", file=sys.stderr)
+        if smoke_stderr: print(f"SMOKE TEST STDERR:\n{smoke_stderr}")
         end_group()
         return False, "Smoke test failed", smoke_stdout + smoke_stderr
     print("Smoke test PASSED.")
