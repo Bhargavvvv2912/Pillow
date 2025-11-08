@@ -54,7 +54,7 @@ jobs:
           echo "--- Generated requirements.in for build and test tools: ---"
           cat requirements.in
           
-      - name: STEP 1: Compile the toolchain dependencies
+      - name: "STEP 1: Compile the toolchain dependencies"
         id: compile-tools
         run: |
           echo "Compiling the build and test toolchain..."
@@ -62,7 +62,7 @@ jobs:
           echo "--- Compiled toolchain requirements: ---"
           cat tool-requirements.txt
 
-      - name: STEP 2: Build the Pillow wheel using the locked toolchain
+      - name: "STEP 2: Build the Pillow wheel using the locked toolchain"
         id: build-wheel
         run: |
           echo "Building the Pillow wheel in a controlled environment..."
@@ -74,7 +74,7 @@ jobs:
           # Pass the ABSOLUTE path of the wheel to the next step
           echo "wheel_path=$(pwd)/$WHEEL_FILE" >> $GITHUB_OUTPUT
 
-      - name: STEP 3: Generate the final requirements file for the agent
+      - name: "STEP 3: Generate the final requirements file for the agent"
         id: generate-final-reqs
         run: |
           echo "Creating the final, unified requirements.txt for the agent..."
@@ -96,7 +96,6 @@ jobs:
 
       - name: Clean up temporary build artifacts before running the agent
         run: |
-          # This prevents git from seeing leftover build files as changes
           rm -rf build_venv
           rm -rf dist
           rm requirements.in tool-requirements.txt
@@ -113,7 +112,6 @@ jobs:
           
           TARGET_FILE="generated-requirements.txt"
           
-          # Add a cleanup step for agent-generated folders to prevent git issues
           rm -rf temp_venv final_venv bootstrap_venv temp_pip_check
           
           git add $TARGET_FILE
