@@ -30,9 +30,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pip-tools and TOML Parser
-        # These are the tools needed for our automated dependency resolution
-        run: python -m pip install pip-tools toml
+      - name: Install Pinned Version of Build Tools
+        run: |
+          python -m pip install "pip-tools==6.13.0" toml
 
       # --- THIS IS THE FINAL, ARCHITECTURALLY CORRECT DEPENDENCY RESOLUTION STEP ---
       - name: Generate a Complete requirements.in and Compile
