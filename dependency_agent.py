@@ -10,7 +10,7 @@ AGENT_CONFIG = {
     "VALIDATION_CONFIG": {
         "type": "smoke_test_with_pytest_report",
         "smoke_test_script": "validation_smoke.py",
-        "pytest_target": "tests",  
+        "pytest_target": "Tests",  
         "project_dir": "Pillow"
     },
     "REQUIREMENTS_FILE": "generated-requirements.txt",

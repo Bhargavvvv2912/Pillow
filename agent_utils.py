@@ -49,7 +49,10 @@ def _run_smoke_test(python_executable: str, config: dict) -> tuple[bool, str, st
     print("Smoke test PASSED.")
     return True, "Smoke test passed.", stdout + stderr
 
+# In agent_utils.py
+
 def _run_pytest_suite(python_executable: str, config: dict) -> tuple[bool, str, str]:
+    """Runs a full pytest suite and provides a detailed result."""
     print("\n--- Running Full Pytest Suite ---")
     validation_config = config.get("VALIDATION_CONFIG", {})
     target = validation_config.get("pytest_target")
@@ -61,6 +64,15 @@ def _run_pytest_suite(python_executable: str, config: dict) -> tuple[bool, str, 
     command = [python_executable, "-m", "pytest", str(target)]
     stdout, stderr, returncode = run_command(command, cwd=project_dir)
     full_output = stdout + stderr
+
+    # --- START OF NEW, MORE ROBUST CHECK ---
+    # First, check if any tests were collected. This is the most important check.
+    collection_match = re.search(r"(\d+)\s+tests? collected", full_output)
+    if collection_match and int(collection_match.group(1)) == 0:
+        error_message = f"Pytest failed: Zero tests were collected. Check the 'pytest_target' in AGENT_CONFIG. Searched for '{target}' in '{project_dir}'."
+        print(f"VALIDATION FAILED: {error_message}", file=sys.stderr)
+        return False, "Pytest collected 0 tests", full_output
+    # --- END OF NEW, MORE ROBUST CHECK ---
 
     summary = _parse_pytest_summary(full_output)
     total_failures = int(summary["failed"]) + int(summary["errors"])
