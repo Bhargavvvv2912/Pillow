@@ -285,6 +285,10 @@ class DependencyAgent:
         if venv_dir.exists(): shutil.rmtree(venv_dir)
         venv.create(venv_dir, with_pip=True)
         python_executable = str((venv_dir / "bin" / "python").resolve())
+        project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
+        if not project_dir:
+             print("CRITICAL ERROR: 'project_dir' not specified in AGENT_CONFIG for final health check.", file=sys.stderr)
+             return
         _, stderr, returncode = run_command([python_executable, "-m", "pip", "install", "-r", str(self.requirements_path)])
         if returncode != 0:
             print("CRITICAL ERROR: Final installation of combined dependencies failed!", file=sys.stderr); return
