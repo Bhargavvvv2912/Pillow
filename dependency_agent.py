@@ -7,6 +7,12 @@ from agent_logic import DependencyAgent
 
 # --- Configuration for the scikit-learn Experiment ---
 AGENT_CONFIG = {
+    "VALIDATION_CONFIG": {
+        "type": "smoke_test_with_pytest_report",
+        "smoke_test_script": "validation_smoke.py",
+        "pytest_target": "tests",  
+        "project_dir": "Pillow"
+    },
     "REQUIREMENTS_FILE": "generated-requirements.txt",
     "PRIMARY_REQUIREMENTS_FILE": "primary_requirements.txt", # We'll use an empty one
     "METRICS_OUTPUT_FILE": "metrics_output.txt",
