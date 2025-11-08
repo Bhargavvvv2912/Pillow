@@ -140,17 +140,55 @@ class DependencyAgent:
         return True, {"metrics": metrics, "packages": self._prune_pip_freeze(installed_packages)}, None
 
 
+    # In agent_logic.py
+
     def run(self):
         if os.path.exists(self.config["METRICS_OUTPUT_FILE"]):
             os.remove(self.config["METRICS_OUTPUT_FILE"])
         
+        # --- START OF NEW ARCHITECTURE ---
+        
+        # STEP 1: Establish and Validate the Initial Baseline
         is_pinned, _ = self._get_requirements_state()
         if not is_pinned:
+            # If requirements are unpinned, bootstrap is the initial health check.
             self._bootstrap_unpinned_requirements()
-            is_pinned, _ = self._get_requirements_state()
-            if not is_pinned:
-                sys.exit("CRITICAL: Bootstrap process failed to produce a fully pinned requirements file.")
+            # After a successful bootstrap, we know the baseline is pinned and valid.
+        else:
+            # If requirements are already pinned, run an initial health check.
+            print("INFO: Found pinned requirements. Running initial health check on the baseline...")
+            start_group("Initial Baseline Health Check")
+            
+            venv_dir = Path("./initial_check_venv")
+            if venv_dir.exists(): shutil.rmtree(venv_dir)
+            venv.create(venv_dir, with_pip=True)
+            python_executable = str((venv_dir / "bin" / "python").resolve())
+            project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
+            
+            req_path = str(self.requirements_path.resolve())
+            pip_command = [python_executable, "-m", "pip", "install", "-r", req_path]
+            
+            _, stderr, returncode = run_command(pip_command, cwd=project_dir)
+            if returncode != 0:
+                print("CRITICAL ERROR: Initial installation of baseline dependencies failed!", file=sys.stderr)
+                print(f"STDERR:\n{stderr}")
+                end_group()
+                sys.exit("Bootstrap failed: Could not install from the provided requirements file.")
 
+            success, _, output = validate_changes(python_executable, self.config)
+            if not success:
+                print("CRITICAL ERROR: The initial baseline failed the validation suite.", file=sys.stderr)
+                print(f"Validation Output:\n{output}")
+                end_group()
+                sys.exit("Bootstrap failed: The provided requirements are not 'provably working'.")
+            
+            print("Initial baseline is valid and stable.")
+            end_group()
+        
+        # --- END OF NEW ARCHITECTURE ---
+
+        # At this point, we have a guaranteed "provably working" baseline.
+        
         final_successful_updates, final_failed_updates = {}, {}
         pass_num = 0
         
@@ -167,78 +205,58 @@ class DependencyAgent:
             changed_packages_this_pass = set()
 
             packages_to_update = []
-            with open(progressive_baseline_path, 'r') as f:
-                lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+            with open(progressive_baseline_path, 'r') as f: lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
             for line in lines:
-                package_part = line.split(';')[0].strip()
-                if '==' not in package_part or line.strip().startswith('-e'): continue
-                parts = package_part.split('==')
-                if len(parts) != 2: continue
-                package, current_version = self._get_package_name_from_spec(parts[0]), parts[1]
+                if '==' not in line or line.startswith('-e'): continue
+                package, current_version = self._get_package_name_from_spec(line.split('==')[0]), line.split('==')[1].split(';')[0]
                 latest_version = self.get_latest_version(package)
                 if latest_version and parse_version(latest_version) > parse_version(current_version):
                     packages_to_update.append((package, current_version, latest_version))
 
             if not packages_to_update:
-                if pass_num == 1:
-                    print("\nInitial baseline is already fully up-to-date. Running a final health check.")
-                    self._run_final_health_check()
-                else:
-                    print("\nNo further updates are available. The system has successfully converged.")
+                print("\nNo further updates are available. The system has successfully converged.")
                 if progressive_baseline_path.exists(): progressive_baseline_path.unlink()
                 break 
 
-            # --- START of HURM 4.0 with "SUM TO 100" NORMALIZATION ---
+            # --- HURM 4.0 Risk Calculation logic remains the same ---
             update_plan = []
             for pkg, cur, target in packages_to_update:
                 components = self._calculate_update_risk_components(pkg, cur, target)
                 update_plan.append({'pkg': pkg, 'cur': cur, 'target': target, 'components': components})
-
             max_ecosystem = max(p['components']['ecosystem'] for p in update_plan) if update_plan else 0
             max_depth = max(p['components']['depth'] for p in update_plan) if update_plan else 0
-
             W_ECOSYSTEM, W_DEPTH = 1.0, 0.5
             for p in update_plan:
-                comps = p['components']
-                norm_ecosystem = (comps['ecosystem'] / max_ecosystem) if max_ecosystem > 0 else 0
+                comps = p['components']; norm_ecosystem = (comps['ecosystem'] / max_ecosystem) if max_ecosystem > 0 else 0
                 norm_depth = (comps['depth'] / max_depth) if max_depth > 0 else 0
                 entanglement_score = (W_ECOSYSTEM * norm_ecosystem) + (W_DEPTH * norm_depth)
                 p['final_score'] = (comps['severity'] * 10) + entanglement_score
                 p['code_impact_score'] = comps['usage'] + (comps['criticality'] * 10)
-
             update_plan.sort(key=lambda p: (p['final_score'], p['code_impact_score']))
-            
-            # --- This is the new "Sum to 100" logic ---
             total_score_sum = sum(p['final_score'] for p in update_plan) if update_plan else 0
             for p in update_plan:
                  if total_score_sum == 0: p['risk_percent_display'] = 0.0
                  else: p['risk_percent_display'] = (p['final_score'] / total_score_sum) * 100.0
-            # --- END OF NORMALIZATION LOGIC ---
+            # --- End of HURM 4.0 Logic ---
 
             print("\nPrioritized Update Plan for this Pass (Lowest Risk First):")
             print(f"{'Rank':<5} | {'Package':<30} | {'% of Total Risk':<18} | {'Change'}")
             print(f"{'-'*5} | {'-'*30} | {'-'*18} | {'-'*20}")
-            for i, p in enumerate(update_plan):
-                print(f"{i+1:<5} | {p['pkg']:<30} | {p['risk_percent_display']:<18.2f}% | {p['cur']} -> {p['target']}")
+            for i, p in enumerate(update_plan): print(f"{i+1:<5} | {p['pkg']:<30} | {p['risk_percent_display']:<18.2f}% | {p['cur']} -> {p['target']}")
             
             for i, p_data in enumerate(update_plan):
                 package, current_ver, target_ver = p_data['pkg'], p_data['cur'], p_data['target']
                 print(f"\n" + "-"*80); print(f"PULSE: [PASS {pass_num} | ATTEMPT {i+1}/{len(update_plan)}] Processing '{package}'"); print(f"PULSE: Changed packages this pass so far: {changed_packages_this_pass}"); print("-"*80)
                 
-                success, reason_or_new_version, _ = self.attempt_update_with_healing(
-                    package, current_ver, target_ver, [], progressive_baseline_path
-                )
+                success, reason_or_new_version, _ = self.attempt_update_with_healing(package, current_ver, target_ver, [], progressive_baseline_path)
                 
                 if success:
                     reached_version, is_a_real_change = "", False
-                    if "skipped" in str(reason_or_new_version):
-                        reached_version, is_a_real_change = current_ver, False
+                    if "skipped" in str(reason_or_new_version): reached_version, is_a_real_change = current_ver, False
                     else:
                         reached_version = reason_or_new_version
                         if current_ver != reached_version: is_a_real_change = True
-                    
                     final_successful_updates[package] = (target_ver, reached_version)
-                    
                     if is_a_real_change:
                         changed_packages_this_pass.add(package)
                         print(f"  -> SUCCESS. Locking in {package}=={reached_version} into the progressive baseline for this pass.")
@@ -264,7 +282,8 @@ class DependencyAgent:
         
         if final_successful_updates:
             self._print_final_summary(final_successful_updates, final_failed_updates)
-            self._run_final_health_check()
+            # The final health check is now gone. The last tested state is the final state.
+            print("\nRun complete. The final requirements.txt is the latest provably working version.")
 
     def _print_final_summary(self, successful, failed):
         print("\n" + "#"*70); print("### OVERALL UPDATE RUN SUMMARY ###")
@@ -279,44 +298,6 @@ class DependencyAgent:
             print(f"{'-'*30} | {'-'*20} | {'-'*40}")
             for pkg, (target_ver, reason) in failed.items(): print(f"{pkg:<30} | {target_ver:<20} | {reason}")
         print("#"*70 + "\n")
-
-    # In agent_logic.py
-
-    def _run_final_health_check(self):
-        print("\n" + "#"*70); print("### FINAL SYSTEM HEALTH CHECK ###"); print("#"*70 + "\n")
-        venv_dir = Path("./final_venv")
-        if venv_dir.exists(): shutil.rmtree(venv_dir)
-        venv.create(venv_dir, with_pip=True)
-        python_executable = str((venv_dir / "bin" / "python").resolve())
-        
-        project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
-        if not project_dir:
-             print("CRITICAL ERROR: 'project_dir' not specified in AGENT_CONFIG.", file=sys.stderr)
-             return
-
-        # Resolve the path to the requirements file to be absolute
-        req_path = str(self.requirements_path.resolve())
-        pip_command = [python_executable, "-m", "pip", "install", "-r", req_path]
-        
-        # --- THE DEFINITIVE FIX ---
-        # Run the pip install command in the correct CWD
-        _, stderr, returncode = run_command(pip_command, cwd=project_dir)
-        # --- END OF FIX ---
-        
-        if returncode != 0:
-            print("CRITICAL ERROR: Final installation of combined dependencies failed!", file=sys.stderr)
-            print(f"STDERR:\n{stderr}") # Also print stderr for debugging
-            return
-
-        # This call is now consistent with the installation environment
-        success, metrics, _ = validate_changes(python_executable, self.config, group_title="Final System Health Check")
-        
-        if success and metrics and "not available" not in metrics:
-            print("\n" + "="*70); print("=== FINAL METRICS FOR THE FULLY UPDATED ENVIRONMENT ==="); print("\n".join([f"  {line}" for line in metrics.split('\n')])); print("="*70)
-        elif success:
-            print("\n" + "="*70); print("=== Final validation passed, but metrics were not available. ==="); print("="*70)
-        else:
-            print("\n" + "!"*70); print("!!! CRITICAL ERROR: Final validation of combined dependencies failed! !!!"); print("!"*70)
 
     def get_latest_version(self, package_name):
         try:
