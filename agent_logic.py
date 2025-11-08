@@ -326,8 +326,10 @@ class DependencyAgent:
             return max(stable_versions, key=parse_version) if stable_versions else max([p.version for p in package_info.packages if p.version], key=parse_version)
         except Exception: return None
 
+    # In agent_logic.py
+
     def _try_install_and_validate(self, package_to_update, new_version, dynamic_constraints, baseline_reqs_path, is_probe):
-        start_group(f"Probe: Attempting install & validation for {package_to_update}=={new_version}")
+        start_group(f"Probe: Install & Validate for {package_to_update}=={new_version}")
         
         venv_dir = Path("./temp_venv")
         if venv_dir.exists(): shutil.rmtree(venv_dir)
@@ -348,45 +350,61 @@ class DependencyAgent:
 
         print(f"--> Preparing test environment: Updating '{package_to_update}' from {old_version} to {new_version}")
 
-        # --- START OF CRITICAL CHANGE: Pass requirements directly to command line ---
+        # --- Pass requirements on command line for better error messages ---
         requirements_list = []
         with open(baseline_reqs_path, "r") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'): continue
+                # Do not include editable installs in this list
+                if line.startswith("-e"): continue
                 if self._get_package_name_from_spec(line.split(';')[0]) == package_to_update:
                     marker_part = f" ;{line.split(';')[1]}" if ';' in line else ""
                     requirements_list.append(f"{package_to_update}=={new_version}{marker_part}")
                 else:
                     requirements_list.append(line)
         
-        # This command is now much cleaner and will produce better error messages
+        # --- Stage 1: Install the dependencies ---
+        print("--> Stage 1: Installing dependencies...")
         pip_command = [python_executable, "-m", "pip", "install"] + requirements_list
-        # --- END OF CRITICAL CHANGE ---
-
         _, stderr_install, returncode = run_command(pip_command)
         
         if returncode != 0:
-            print("--> ERROR: Installation failed. Analyzing conflict...")
-            # The error from pip is now directly readable, so we can use a simpler regex
-            conflict_match = re.search(r"because these package versions have conflicting dependencies.\s*([\s\S]*)The conflict is caused by:", stderr_install, re.MULTILINE)
-            reason = "Installation conflict"
-            if conflict_match:
-                try:
-                    conflict_lines = conflict_match.group(1).strip().split('\n')
-                    packages_involved = [line.split(' ')[0].strip() for line in conflict_lines if line.strip()]
-                    reason = f"Conflict involves: {', '.join(packages_involved)}"
-                except Exception:
-                    reason = "Conflict (Could not parse details)"
-            else: # Fallback for other error types
-                 summary = self._ask_llm_to_summarize_error(stderr_install)
-                 reason = f"Installation failed: {summary}"
-
-            print(f"--> DIAGNOSIS: {reason}")
+            print("--> ERROR: Dependency installation failed.")
+            summary = self._ask_llm_to_summarize_error(stderr_install)
             end_group()
-            return False, reason, stderr_install
+            return False, f"Installation failed: {summary}", stderr_install
+
+        # --- Stage 2: Build and Install the Project (if compilable) ---
+        if self.config.get("IS_COMPILABLE_PROJECT"):
+            print("\n--> Stage 2: Building project with new dependencies...")
+            project_dir = self.config["VALIDATION_CONFIG"]["project_dir"]
+            dist_dir = venv_dir / "dist" # Use a temp dist dir
+            
+            build_command = [python_executable, "-m", "pip", "wheel", "-w", str(dist_dir), f"./{project_dir}"]
+            _, stderr_build, returncode_build = run_command(build_command)
+            
+            if returncode_build != 0:
+                print("--> ERROR: Project build failed.")
+                summary = self._ask_llm_to_summarize_error(stderr_build)
+                end_group()
+                return False, f"Build failure: {summary}", stderr_build
+
+            # Install the newly built wheel into the same venv
+            try:
+                wheel_file = next(dist_dir.glob("*.whl"))
+                print(f"--> Build successful. Installing wheel: {wheel_file.name}")
+                install_wheel_command = [python_executable, "-m", "pip", "install", str(wheel_file)]
+                _, stderr_wheel_install, returncode_wheel_install = run_command(install_wheel_command)
+                if returncode_wheel_install != 0:
+                     raise RuntimeError(f"Failed to install built wheel: {stderr_wheel_install}")
+            except (StopIteration, RuntimeError) as e:
+                print(f"--> ERROR: Could not find or install built wheel. {e}")
+                end_group()
+                return False, "Wheel installation failure", str(e)
         
-        print("--> Installation successful. Running validation suite...")
+        # --- Stage 3: Run Validation ---
+        print("\n--> Stage 3: Running validation suite...")
         success, metrics, validation_output = validate_changes(python_executable, self.config, group_title=f"Running Validation on {package_to_update}=={new_version}")
 
         if not success:
@@ -394,7 +412,7 @@ class DependencyAgent:
             end_group()
             return False, "Validation script failed", validation_output
 
-        print("--> SUCCESS: Installation and validation passed.")
+        print("--> SUCCESS: Install, build, and validation passed.")
         end_group()
         return True, metrics, ""
 

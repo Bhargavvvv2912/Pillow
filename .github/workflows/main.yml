@@ -38,53 +38,50 @@ jobs:
             "pip-tools==6.13.0" \
             "toml"
 
-      # --- THIS IS THE FINAL, ARCHITECTURALLY CORRECT DEPENDENCY RESOLUTION STEP ---
+     
       - name: Generate a Complete requirements.in and Compile
         id: generate-reqs
         run: |
           echo "Dynamically resolving Build, Core, and Test dependencies from pyproject.toml..."
 
-          # This embedded Python script automates the discovery process.
+          # --- (The Python script to generate requirements.in is the same, but we will CHANGE its content) ---
           python -c "
           import toml
           from pathlib import Path
 
-          # Define the target project directory
           project_dir = Path('./Pillow')
           toml_path = project_dir / 'pyproject.toml'
+          with open(toml_path, 'r') as f: data = toml.load(f)
 
-          print(f'Reading dependencies from {toml_path}')
-          with open(toml_path, 'r') as f:
-              data = toml.load(f)
-
-          # 1. Get the Build System Dependencies (e.g., setuptools, pybind11)
           build_deps = data.get('build-system', {}).get('requires', [])
-          print(f'Found {len(build_deps)} build-system dependencies.')
-
-          # 2. Get the Core Project Dependencies (Pillow has none, but this makes it generic)
-          core_deps = data.get('project', {}).get('dependencies', [])
-          print(f'Found {len(core_deps)} core dependencies.')
-
-          # 3. Get the Specific 'tests' Optional Dependencies (e.g., pytest)
           test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
-          print(f'Found {len(test_deps)} test dependencies.')
-
-          # --- Construct the requirements.in file ---
+          
           with open('requirements.in', 'w') as f:
-              # This line is crucial: it tells pip-compile to include the project itself.
-              # This implicitly handles the core dependencies.
-              f.write(f'-e ./{project_dir.name}\n')
-              
-              # Add the build-system and test dependencies
+              # DO NOT use editable install. Just list the dependencies.
+              # pip-compile will handle the rest.
               for dep in build_deps + test_deps:
                   f.write(f'{dep}\n')
           "
+
+          # --- START OF NEW, CORRECTED LOGIC ---
+          # 1. Build a wheel file from the Pillow source code.
+          #    The output will be a .whl file in the 'dist' directory.
+          echo "Building a wheel file for the local Pillow project..."
+          python -m pip wheel -w dist ./Pillow
+
+          # Find the name of the wheel we just built.
+          WHEEL_FILE=$(ls dist/*.whl)
+          echo "Successfully built wheel: $WHEEL_FILE"
+          
+          # 2. Add the path to our local wheel to the requirements.in file.
+          #    This tells pip-compile to use our locally-built version.
+          echo "$WHEEL_FILE" >> requirements.in
+          # --- END OF NEW, CORRECTED LOGIC ---
 
           echo "--- Generated a complete temporary requirements.in file: ---"
           cat requirements.in
           echo "--------------------------------------------------------"
           
-          # Now, compile this complete and explicit input file.
           pip-compile --resolver=backtracking --output-file generated-requirements.txt requirements.in
 
           echo "Generated the final, complete requirements.txt file for the agent."
