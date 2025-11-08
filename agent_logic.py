@@ -118,15 +118,17 @@ class DependencyAgent:
     
     def _run_bootstrap_and_validate(self, venv_dir, requirements_source):
         python_executable = str((venv_dir / "bin" / "python").resolve())
-        
+        project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
+
         if isinstance(requirements_source, (Path, str)):
-            pip_command = [python_executable, "-m", "pip", "install", "-r", str(requirements_source)]
+            req_path = str(requirements_source.resolve())
+            pip_command = [python_executable, "-m", "pip", "install", "-r", req_path]
         else:
             temp_reqs_path = venv_dir / "temp_reqs.txt"
             with open(temp_reqs_path, "w") as f: f.write("\n".join(requirements_source))
             pip_command = [python_executable, "-m", "pip", "install", "-r", str(temp_reqs_path)]
             
-        _, stderr_install, returncode = run_command(pip_command)
+        _, stderr_install, returncode = run_command(pip_command, cwd=project_dir)
         if returncode != 0:
             return False, None, f"Failed to install dependencies. Error: {stderr_install}"
 
@@ -134,10 +136,9 @@ class DependencyAgent:
         if not success:
             return False, None, validation_output
             
-        installed_packages, _, _ = run_command([python_executable, "-m", "pip", "freeze"])
+        installed_packages, _, _ = run_command([python_executable, "-m", "pip", "freeze"], cwd=project_dir)
         return True, {"metrics": metrics, "packages": self._prune_pip_freeze(installed_packages)}, None
 
-   # In agent_logic.py
 
     def run(self):
         if os.path.exists(self.config["METRICS_OUTPUT_FILE"]):
@@ -279,24 +280,41 @@ class DependencyAgent:
             for pkg, (target_ver, reason) in failed.items(): print(f"{pkg:<30} | {target_ver:<20} | {reason}")
         print("#"*70 + "\n")
 
+    # In agent_logic.py
+
     def _run_final_health_check(self):
         print("\n" + "#"*70); print("### FINAL SYSTEM HEALTH CHECK ###"); print("#"*70 + "\n")
         venv_dir = Path("./final_venv")
         if venv_dir.exists(): shutil.rmtree(venv_dir)
         venv.create(venv_dir, with_pip=True)
         python_executable = str((venv_dir / "bin" / "python").resolve())
+        
         project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
         if not project_dir:
-             print("CRITICAL ERROR: 'project_dir' not specified in AGENT_CONFIG for final health check.", file=sys.stderr)
+             print("CRITICAL ERROR: 'project_dir' not specified in AGENT_CONFIG.", file=sys.stderr)
              return
-        _, stderr, returncode = run_command([python_executable, "-m", "pip", "install", "-r", str(self.requirements_path)])
+
+        # Resolve the path to the requirements file to be absolute
+        req_path = str(self.requirements_path.resolve())
+        pip_command = [python_executable, "-m", "pip", "install", "-r", req_path]
+        
+        # --- THE DEFINITIVE FIX ---
+        # Run the pip install command in the correct CWD
+        _, stderr, returncode = run_command(pip_command, cwd=project_dir)
+        # --- END OF FIX ---
+        
         if returncode != 0:
-            print("CRITICAL ERROR: Final installation of combined dependencies failed!", file=sys.stderr); return
+            print("CRITICAL ERROR: Final installation of combined dependencies failed!", file=sys.stderr)
+            print(f"STDERR:\n{stderr}") # Also print stderr for debugging
+            return
+
+        # This call is now consistent with the installation environment
         success, metrics, _ = validate_changes(python_executable, self.config, group_title="Final System Health Check")
+        
         if success and metrics and "not available" not in metrics:
             print("\n" + "="*70); print("=== FINAL METRICS FOR THE FULLY UPDATED ENVIRONMENT ==="); print("\n".join([f"  {line}" for line in metrics.split('\n')])); print("="*70)
         elif success:
-            print("\n" + "="*70); print("=== Final validation passed, but metrics were not available in output. ==="); print("="*70)
+            print("\n" + "="*70); print("=== Final validation passed, but metrics were not available. ==="); print("="*70)
         else:
             print("\n" + "!"*70); print("!!! CRITICAL ERROR: Final validation of combined dependencies failed! !!!"); print("!"*70)
 
