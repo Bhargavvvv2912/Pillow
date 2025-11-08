@@ -31,6 +31,7 @@ def _parse_pytest_summary(full_output: str) -> dict:
         if status in summary: summary[status] = count
     return summary
 
+
 def _run_smoke_test(python_executable: str, config: dict) -> tuple[bool, str, str]:
     print("\n--- Running Smoke Test ---")
     validation_config = config.get("VALIDATION_CONFIG", {})
@@ -41,16 +42,20 @@ def _run_smoke_test(python_executable: str, config: dict) -> tuple[bool, str, st
         return False, "Smoke test failed: 'smoke_test_script' not defined in AGENT_CONFIG.", ""
     
     command = [python_executable, str(Path(script_path).resolve())]
-    stdout, stderr, returncode = run_command(command)
+    stdout, stderr, returncode = run_command(command, cwd=project_dir)
 
+    # --- START OF NEW DEBUGGING LOGIC ---
+    # Combine stdout and stderr to make sure we see everything.
+    full_output = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
     if returncode != 0:
         print("CRITICAL VALIDATION FAILURE: Smoke test failed.", file=sys.stderr)
+        # Always print the full output, which now contains our forensic data.
+        print(f"--- Smoke Test Full Output ---\n{full_output}\n--- End of Full Output ---")
         return False, f"Smoke test failed with exit code {returncode}", stdout + stderr
+    # --- END OF NEW DEBUGGING LOGIC ---
     
     print("Smoke test PASSED.")
     return True, "Smoke test passed.", stdout + stderr
-
-# In agent_utils.py
 
 def _run_pytest_suite(python_executable: str, config: dict) -> tuple[bool, str, str]:
     """Runs a full pytest suite and provides a detailed result."""
