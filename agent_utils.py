@@ -35,6 +35,7 @@ def _run_smoke_test(python_executable: str, config: dict) -> tuple[bool, str, st
     print("\n--- Running Smoke Test ---")
     validation_config = config.get("VALIDATION_CONFIG", {})
     script_path = validation_config.get("smoke_test_script")
+    project_dir = validation_config.get("project_dir") 
     
     if not script_path:
         return False, "Smoke test failed: 'smoke_test_script' not defined in AGENT_CONFIG.", ""
