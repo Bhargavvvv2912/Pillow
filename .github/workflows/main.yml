@@ -40,6 +40,7 @@ jobs:
 
       - name: Generate a Complete requirements.in file
         id: generate-req-in
+        # ... (this step is unchanged)
         run: |
           echo "Dynamically resolving Build and Test dependencies from pyproject.toml..."
           python -c "
@@ -51,37 +52,29 @@ jobs:
           with open('requirements.in', 'w') as f:
               for dep in build_deps + test_deps: f.write(f'{dep}\n')
           "
-          echo "--- Generated requirements.in for build and test tools: ---"
-          cat requirements.in
-          
+
       - name: "STEP 1: Compile the toolchain dependencies"
         id: compile-tools
+        # ... (this step is unchanged)
         run: |
-          echo "Compiling the build and test toolchain..."
           pip-compile --resolver=backtracking --output-file=tool-requirements.txt requirements.in
-          echo "--- Compiled toolchain requirements: ---"
-          cat tool-requirements.txt
 
       - name: "STEP 2: Build the Pillow wheel using the locked toolchain"
         id: build-wheel
+        # ... (this step is unchanged)
         run: |
-          echo "Building the Pillow wheel in a controlled environment..."
           python -m venv build_venv
           ./build_venv/bin/python -m pip install -r tool-requirements.txt
           ./build_venv/bin/python -m pip wheel -w dist ./Pillow
           WHEEL_FILE=$(ls dist/*.whl)
-          echo "Successfully built wheel: $WHEEL_FILE"
-          # Pass the ABSOLUTE path of the wheel to the next step
           echo "wheel_path=$(pwd)/$WHEEL_FILE" >> $GITHUB_OUTPUT
 
       - name: "STEP 3: Generate the final requirements file for the agent"
         id: generate-final-reqs
+        # ... (this step is unchanged)
         run: |
-          echo "Creating the final, unified requirements.txt for the agent..."
           cat tool-requirements.txt > generated-requirements.txt
           echo "${{ steps.build-wheel.outputs.wheel_path }}" >> generated-requirements.txt
-          echo "--- Generated the final requirements file for the agent: ---"
-          cat generated-requirements.txt
 
       - name: Cache pip packages
         uses: actions/cache@v3
@@ -94,11 +87,12 @@ jobs:
       - name: Install agent dependencies
         run: pip install google-generativeai pypi-simple packaging
 
-      - name: Clean up temporary build artifacts before running the agent
-        run: |
-          rm -rf build_venv
-          rm -rf dist
-          rm requirements.in tool-requirements.txt
+      # --- THIS STEP HAS BEEN DELETED ---
+      # - name: Clean up temporary build artifacts before running the agent
+      #   run: |
+      #     rm -rf build_venv
+      #     rm -rf dist
+      #     rm requirements.in tool-requirements.txt
 
       - name: Run the Autonomous Agent
         run: python dependency_agent.py
@@ -112,7 +106,12 @@ jobs:
           
           TARGET_FILE="generated-requirements.txt"
           
+          # --- THE CLEANUP LOGIC NOW LIVES HERE, AT THE END ---
+          echo "Cleaning up all temporary artifacts before committing..."
+          # Agent artifacts
           rm -rf temp_venv final_venv bootstrap_venv temp_pip_check
+          # Build artifacts
+          rm -rf build_venv dist requirements.in tool-requirements.txt
           
           git add $TARGET_FILE
           if git diff-index --quiet HEAD; then
