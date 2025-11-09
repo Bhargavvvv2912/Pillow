@@ -309,94 +309,70 @@ class DependencyAgent:
 
     # In agent_logic.py
 
+    # In agent_logic.py
+
     def _try_install_and_validate(self, package_to_update, new_version, dynamic_constraints, baseline_reqs_path, is_probe):
-        start_group(f"Probe: Install & Validate for {package_to_update}=={new_version}")
+        start_group(f"Probe: Install, Build & Validate for {package_to_update}=={new_version}")
         
         venv_dir = Path("./temp_venv")
         if venv_dir.exists(): shutil.rmtree(venv_dir)
         venv.create(venv_dir, with_pip=True)
         python_executable = str((venv_dir / "bin" / "python").resolve())
         
-        old_version = "N/A"
-        with open(baseline_reqs_path, "r") as f:
-            for line in f:
-                if self._get_package_name_from_spec(line.split(';')[0]) == package_to_update and '==' in line:
-                    old_version = line.split(';')[0].strip().split('==')[1]
-                    break
+        # --- Stage 1: Install the complete dependency set ---
+        print("--> Stage 1: Installing the proposed dependency toolchain...")
         
-        if new_version == old_version:
-            print(f"--> Version is unchanged ({old_version}). Skipping probe.")
-            end_group()
-            return True, "Validation skipped (no change)", ""
-
-        print(f"--> Preparing test environment: Updating '{package_to_update}' from {old_version} to {new_version}")
-
-        # --- Pass requirements on command line for better error messages ---
         requirements_list = []
         with open(baseline_reqs_path, "r") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith('#'): continue
-                # Do not include editable installs in this list
-                if line.startswith("-e"): continue
+                if not line or line.startswith('#') or ".whl" in line: continue
+                
                 if self._get_package_name_from_spec(line.split(';')[0]) == package_to_update:
                     marker_part = f" ;{line.split(';')[1]}" if ';' in line else ""
                     requirements_list.append(f"{package_to_update}=={new_version}{marker_part}")
                 else:
                     requirements_list.append(line)
         
-        # --- Stage 1: Install the dependencies ---
-        print("--> Stage 1: Installing dependencies...")
         pip_command = [python_executable, "-m", "pip", "install"] + requirements_list
         _, stderr_install, returncode = run_command(pip_command)
         
         if returncode != 0:
-            print("--> ERROR: Dependency installation failed.")
+            print("--> ERROR: Toolchain dependency installation failed.")
             summary = self._ask_llm_to_summarize_error(stderr_install)
             end_group()
             return False, f"Installation failed: {summary}", stderr_install
 
-        # --- Stage 2: Build and Install the Project (if compilable) ---
-        if self.config.get("IS_COMPILABLE_PROJECT"):
-            print("\n--> Stage 2: Building project with new dependencies...")
-            project_dir = self.config["VALIDATION_CONFIG"]["project_dir"]
-            dist_dir = venv_dir / "dist" # Use a temp dist dir
+        # --- Stage 2: Build and Install the Project Itself ---
+        print("\n--> Stage 2: Building and installing the project with the new toolchain...")
+        project_dir = self.config["VALIDATION_CONFIG"].get("project_dir")
+        if not project_dir:
+            end_group()
+            return False, "Configuration error: project_dir not set", ""
             
-            build_command = [python_executable, "-m", "pip", "wheel", "-w", str(dist_dir), f"./{project_dir}"]
-            _, stderr_build, returncode_build = run_command(build_command)
+        # This one command builds AND installs the project in the current venv. It is more robust.
+        build_install_command = [python_executable, "-m", "pip", "install", f"./{project_dir}"]
+        _, stderr_build, returncode_build = run_command(build_install_command)
             
-            if returncode_build != 0:
-                print("--> ERROR: Project build failed.")
-                summary = self._ask_llm_to_summarize_error(stderr_build)
-                end_group()
-                return False, f"Build failure: {summary}", stderr_build
+        if returncode_build != 0:
+            print("--> ERROR: Project build/install failed.")
+            summary = self._ask_llm_to_summarize_error(stderr_build)
+            end_group()
+            return False, f"Build failure: {summary}", stderr_build
 
-            # Install the newly built wheel into the same venv
-            try:
-                wheel_file = next(dist_dir.glob("*.whl"))
-                print(f"--> Build successful. Installing wheel: {wheel_file.name}")
-                install_wheel_command = [python_executable, "-m", "pip", "install", str(wheel_file)]
-                _, stderr_wheel_install, returncode_wheel_install = run_command(install_wheel_command)
-                if returncode_wheel_install != 0:
-                     raise RuntimeError(f"Failed to install built wheel: {stderr_wheel_install}")
-            except (StopIteration, RuntimeError) as e:
-                print(f"--> ERROR: Could not find or install built wheel. {e}")
-                end_group()
-                return False, "Wheel installation failure", str(e)
-        
         # --- Stage 3: Run Validation ---
         print("\n--> Stage 3: Running validation suite...")
-        success, metrics, validation_output = validate_changes(python_executable, self.config, group_title=f"Running Validation on {package_to_update}=={new_version}")
+        success, metrics, validation_output = validate_changes(python_executable, self.config, group_title=f"Running Validation")
 
         if not success:
-            print("--> ERROR: Validation script failed.")
+            print("--> ERROR: Validation failed.")
             end_group()
             return False, "Validation script failed", validation_output
 
-        print("--> SUCCESS: Install, build, and validation passed.")
+        print("--> SUCCESS: Install, build, and validation passed for this probe.")
         end_group()
         return True, metrics, ""
-
+    
     def attempt_update_with_healing(self, package, current_version, target_version, dynamic_constraints, baseline_reqs_path):
         print(f"\n--> Toplevel Attempt: Trying direct update to {package}=={target_version}")
         
