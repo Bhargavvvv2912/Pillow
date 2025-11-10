@@ -38,33 +38,36 @@ jobs:
             "pip-tools==6.13.0" \
             "toml"
 
-      - name: Generate a Complete requirements.in file
-        id: generate-req-in
+      - name: "STEP 1: Generate a temporary 'ideal state' requirements file"
+        id: compile-ideal-state
         run: |
-          echo "Dynamically resolving Build, Test, and Project dependencies from pyproject.toml..."
+          echo "Generating requirements.in from pyproject.toml..."
           python -c "
           import toml; from pathlib import Path
-          project_dir = Path('./Pillow')
-          toml_path = project_dir / 'pyproject.toml'
+          toml_path = Path('./Pillow/pyproject.toml')
           with open(toml_path, 'r') as f: data = toml.load(f)
           build_deps = data.get('build-system', {}).get('requires', [])
           test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
           with open('requirements.in', 'w') as f:
-              # --- THIS IS THE CRITICAL FIX ---
-              # Explicitly tell pip-compile to include the local Pillow project.
-              f.write(f'-e ./{project_dir.name}\n')
-              # --- END OF FIX ---
+              f.write('-e ./Pillow\n')
               for dep in build_deps + test_deps: f.write(f'{dep}\n')
           "
-          echo "--- Generated requirements.in for build, test, and project source: ---"
-          cat requirements.in
+          
+          echo "Compiling requirements.in to a temporary ideal state file..."
+          # This file contains the 'perfect' state with all markers and comments.
+          pip-compile --resolver=backtracking --output-file=temp-ideal-state.txt requirements.in
 
-      - name: Compile ALL dependencies into a single lock file
-        id: compile-all
+      - name: "STEP 2: Reconcile the Golden Record with the Ideal State"
+        id: reconcile-golden-record
         run: |
-          echo "Compiling all dependencies into a single requirements file..."
-          pip-compile --resolver=backtracking --output-file=generated-requirements.txt requirements.in
-          echo "--- Generated the final, unified requirements.txt for the agent: ---"
+          # Run your script to intelligently update the long-lived Golden Record.
+          python reconcile.py
+          
+          # We rename the output file to what the agent expects.
+          # Note: your reconcile.py saves to 'requirements.txt', so we rename it.
+          mv requirements.txt generated-requirements.txt
+
+          echo "--- The reconciled and cleaned Golden Record is now ready for the agent: ---"
           cat generated-requirements.txt
       
       - name: Cache pip packages
@@ -80,7 +83,9 @@ jobs:
 
       - name: Clean up temporary build artifacts
         run: |
+          # Clean up the files that are no longer needed before the agent runs.
           rm -rf requirements.in
+          rm -rf temp-ideal-state.txt
 
       - name: Run the Autonomous Agent
         run: python dependency_agent.py
@@ -94,6 +99,7 @@ jobs:
           
           TARGET_FILE="generated-requirements.txt"
           
+          # Clean up agent's temporary directories
           rm -rf temp_venv final_venv bootstrap_venv temp_pip_check
           
           git add $TARGET_FILE
