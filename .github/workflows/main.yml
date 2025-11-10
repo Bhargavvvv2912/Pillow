@@ -36,39 +36,16 @@ jobs:
             "pip==23.3.1" \
             "setuptools==68.2.2" \
             "pip-tools==6.13.0" \
-            "toml"
+            "toml" \
+            "argparse" 
 
-      - name: "STEP 1: Generate a temporary 'ideal state' requirements file"
-        id: compile-ideal-state
+      - name: "Reconcile Golden Record (generated-requirements.txt)"
+        id: reconcile
         run: |
-          echo "Generating requirements.in from pyproject.toml..."
-          python -c "
-          import toml; from pathlib import Path
-          toml_path = Path('./Pillow/pyproject.toml')
-          with open(toml_path, 'r') as f: data = toml.load(f)
-          build_deps = data.get('build-system', {}).get('requires', [])
-          test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
-          with open('requirements.in', 'w') as f:
-              f.write('-e ./Pillow\n')
-              for dep in build_deps + test_deps: f.write(f'{dep}\n')
-          "
-          
-          echo "Compiling requirements.in to a temporary ideal state file..."
-          # This file contains the 'perfect' state with all markers and comments.
-          pip-compile --resolver=backtracking --output-file=temp-ideal-state.txt requirements.in
-
-      - name: "STEP 2: Reconcile the Golden Record with the Ideal State"
-        id: reconcile-golden-record
-        run: |
-          # Run your script to intelligently update the long-lived Golden Record.
-          python reconcile.py
-          
-          # We rename the output file to what the agent expects.
-          # Note: your reconcile.py saves to 'requirements.txt', so we rename it.
-          mv requirements.txt generated-requirements.txt
-
-          echo "--- The reconciled and cleaned Golden Record is now ready for the agent: ---"
-          cat generated-requirements.txt
+          # --- THIS IS THE GENERIC CALL ---
+          # We pass the path to the Pillow project as an argument.
+          python reconcile.py ./Pillow
+          # --- END OF GENERIC CALL ---
       
       - name: Cache pip packages
         uses: actions/cache@v3
@@ -83,9 +60,7 @@ jobs:
 
       - name: Clean up temporary build artifacts
         run: |
-          # Clean up the files that are no longer needed before the agent runs.
           rm -rf requirements.in
-          rm -rf temp-ideal-state.txt
 
       - name: Run the Autonomous Agent
         run: python dependency_agent.py
@@ -99,7 +74,6 @@ jobs:
           
           TARGET_FILE="generated-requirements.txt"
           
-          # Clean up agent's temporary directories
           rm -rf temp_venv final_venv bootstrap_venv temp_pip_check
           
           git add $TARGET_FILE

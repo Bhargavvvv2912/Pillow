@@ -1,75 +1,91 @@
-# reconcile.py (The Final, Correct, and Clean Version)
+# reconcile.py (The Final, Generic, and Correct Version)
 
+import subprocess
 from pathlib import Path
+import toml
 import re
 import sys
+import argparse # Use argparse for clean command-line arguments
 
 def get_package_name_from_line(line: str) -> str | None:
     """Robustly extracts the package name from a requirements line."""
     match = re.match(r'^(-e\s+)?([a-zA-Z0-9\-_]+)', line.strip())
     return match.group(2) if match else None
 
-def clean_line_for_golden_record(line: str) -> str:
-    """
-    Takes a full requirements line from pip-compile and returns only the
-    'package==version' or '-e ...' part, stripping all markers and comments.
-    This is YOUR core, correct logic.
-    """
-    # The `-e` line is special and must be preserved as-is.
-    if line.strip().startswith('-e'):
-        return line.strip()
-    
-    # For all other lines, we take only the part before the first semicolon.
-    return line.split(';')[0].strip()
+def main():
+    # --- START OF GENERIC IMPLEMENTATION ---
+    parser = argparse.ArgumentParser(description="Reconcile a requirements.txt with a pyproject.toml.")
+    parser.add_argument("project_dir", type=str, help="The path to the project directory (e.g., ./Pillow).")
+    args = parser.parse_args()
 
-def reconcile_requirements():
-    """
-    Intelligently reconciles the Golden Record (requirements.txt) with the
-    Ideal State (temp-ideal-state.txt), ensuring the Golden Record is always clean.
-    """
-    golden_record_path = Path("requirements.txt")
-    ideal_state_path = Path("temp-ideal-state.txt")
+    project_path = Path(args.project_dir)
+    pyproject_path = project_path / "pyproject.toml"
+    project_name = project_path.name
+    # --- END OF GENERIC IMPLEMENTATION ---
 
-    if not ideal_state_path.exists():
-        sys.exit("ERROR: Ideal state file (temp-ideal-state.txt) not found.")
+    golden_record_path = Path("generated-requirements.txt")
 
-    with open(ideal_state_path, "r") as f:
-        ideal_deps_lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    if not pyproject_path.exists():
+        sys.exit(f"ERROR: pyproject.toml not found at {pyproject_path}")
+
+    # --- Step 1: Get the list of intended dependencies from pyproject.toml ---
+    with open(pyproject_path, "r") as f:
+        data = toml.load(f)
+    build_deps = data.get('build-system', {}).get('requires', [])
+    test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
     
-    # --- THIS IS THE FINAL, UNIFIED LOGIC ---
-    
-    # If the Golden Record doesn't exist, create it with CLEANED lines.
-    if not golden_record_path.exists() or golden_record_path.stat().st_size == 0:
-        print("Golden Record (requirements.txt) is missing or empty. Creating a clean version from the ideal state.")
-        
-        # Apply the cleaning function to EVERY line.
-        cleaned_lines = [clean_line_for_golden_record(line) for line in ideal_deps_lines]
-        
-        with open(golden_record_path, "w") as f:
-            f.write("\n".join(sorted(cleaned_lines)))
-        print(f"Created a new, clean Golden Record with {len(cleaned_lines)} packages.")
+    # --- THIS LINE IS NOW GENERIC ---
+    intended_deps_list = [project_name] + [get_package_name_from_line(dep) for dep in build_deps + test_deps]
+    intended_deps_set = {name.lower() for name in intended_deps_list if name}
+
+    # --- Step 2: Create Golden Record if it doesn't exist ---
+    if not golden_record_path.exists():
+        print(f"Golden Record ({golden_record_path}) not found. Generating a new one from scratch...")
+        with open('requirements.in', 'w') as f:
+            f.write(f'-e ./{project_name}\n') # Use the generic project name
+            for dep in build_deps + test_deps: f.write(f'{dep}\n')
+            
+        return_code = subprocess.run(
+            ["pip-compile", "--resolver=backtracking", "--output-file", str(golden_record_path), "requirements.in"],
+            capture_output=True, text=True
+        )
+        if return_code.returncode != 0:
+            print("ERROR: pip-compile failed during initial generation.", file=sys.stderr)
+            print(return_code.stderr, file=sys.stderr)
+            sys.exit(1)
+        print("Successfully generated a new Golden Record.")
         return
 
-    # For subsequent runs, we also use the cleaning logic.
+    # --- Step 3: Reconcile existing Golden Record ---
+    print("Golden Record found. Reconciling with pyproject.toml...")
     with open(golden_record_path, "r") as f:
-        golden_package_names = {get_package_name_from_line(line) for line in f if line.strip()}
-    
-    new_deps_to_add = []
-    for ideal_line in ideal_deps_lines:
-        ideal_pkg_name = get_package_name_from_line(ideal_line)
-        
-        if ideal_pkg_name and ideal_pkg_name.lower() not in (name.lower() for name in golden_package_names):
-            # YOUR LOGIC: Clean the line BEFORE appending it.
-            cleaned_line = clean_line_for_golden_record(ideal_line)
-            print(f"New dependency '{ideal_pkg_name}' discovered. Adding cleaned version to Golden Record: '{cleaned_line}'")
-            new_deps_to_add.append(cleaned_line)
+        existing_package_names = {get_package_name_from_line(line).lower() for line in f if line.strip() and get_package_name_from_line(line)}
 
-    if new_deps_to_add:
-        print(f"Adding {len(new_deps_to_add)} new, clean dependencies to Golden Record.")
-        with open(golden_record_path, "a") as f:
-            f.write("\n" + "\n".join(sorted(new_deps_to_add)))
-    else:
-        print("Golden Record is in sync with pyproject.toml. No new dependencies found.")
+    missing_packages = intended_deps_set - existing_package_names
+    
+    if not missing_packages:
+        print("Golden Record is in sync with pyproject.toml. No new dependencies to add.")
+        return
+
+    print(f"Found {len(missing_packages)} new dependencies in pyproject.toml to add: {missing_packages}")
+    
+    with open('requirements.in', 'w') as f:
+        with open(golden_record_path, 'r') as grf:
+            f.write(grf.read())
+        for new_pkg in missing_packages:
+            f.write(f'\n{new_pkg}')
+
+    print("Re-compiling to add new packages and their dependencies...")
+    return_code = subprocess.run(
+        ["pip-compile", "--resolver=backtracking", "--output-file", str(golden_record_path), "requirements.in"],
+        capture_output=True, text=True
+    )
+    if return_code.returncode != 0:
+        print("ERROR: pip-compile failed during reconciliation.", file=sys.stderr)
+        print(return_code.stderr, file=sys.stderr)
+        sys.exit(1)
+    
+    print("Golden Record has been successfully updated with new dependencies.")
 
 if __name__ == "__main__":
-    reconcile_requirements()
+    main()
