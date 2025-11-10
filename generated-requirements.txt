@@ -4,7 +4,6 @@ charset-normalizer==3.4.4
 check-manifest==0.51
 coverage==7.11.3
 defusedxml==0.7.1
-docutils==0.22.3
 execnet==2.1.1
 idna==3.7
 iniconfig==2.3.0
