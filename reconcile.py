@@ -1,4 +1,4 @@
-# reconcile.py (The Final, Correct, Stateful Version)
+# reconcile.py (The Final, Correct, and Simple Version)
 
 import subprocess
 from pathlib import Path
@@ -8,15 +8,9 @@ import sys
 import argparse
 
 def get_package_name_from_line(line: str) -> str | None:
-    """Robustly extracts the package name from a requirements line, correctly handling editable installs."""
+    """Robustly extracts the package name from a requirements line."""
     line = line.strip()
-    # --- THIS IS THE CRITICAL FIX ---
-    if line.startswith('-e'):
-        # For editable installs like '-e ./Pillow', the name is the directory name after the last slash.
-        path = line.split(' ')[-1]
-        return Path(path).name
-    # --- END OF CRITICAL FIX ---
-    
+    if line.startswith('-e'): return None # Explicitly ignore editable installs
     match = re.match(r'([a-zA-Z0-9\-_]+)', line)
     return match.group(1) if match else None
 
@@ -27,49 +21,43 @@ def main():
 
     project_path = Path(args.project_dir)
     pyproject_path = project_path / "pyproject.toml"
-    project_name = project_path.name
     golden_record_path = Path("generated-requirements.txt")
     requirements_in_path = Path("requirements.in")
 
     if not pyproject_path.exists():
         sys.exit(f"ERROR: pyproject.toml not found at {pyproject_path}")
 
-    # --- Step 1: Get the set of intended top-level dependencies from pyproject.toml ---
+    # --- Step 1: Get the list of intended TOOL dependencies from pyproject.toml ---
     with open(pyproject_path, "r") as f:
         data = toml.load(f)
     build_deps = data.get('build-system', {}).get('requires', [])
     test_deps = data.get('project', {}).get('optional-dependencies', {}).get('tests', [])
-    
     intended_dep_names = {get_package_name_from_line(dep).lower() for dep in build_deps + test_deps if get_package_name_from_line(dep)}
-    intended_dep_names.add(project_name.lower()) # The project itself is an intended dependency
 
-    # --- Step 2: Handle the "first run" case ---
+    # --- Step 2: Handle "first run" case ---
     if not golden_record_path.exists():
-        print(f"Golden Record ({golden_record_path}) not found. Generating a new one from scratch...")
+        print(f"Golden Record ({golden_record_path}) for dependencies not found. Generating a new one...")
         with open(requirements_in_path, 'w') as f:
-            f.write(f'-e ./{project_path.name}\n') # MUST include the project
             for dep in build_deps + test_deps: f.write(f'{dep}\n')
             
         compile_cmd = ["pip-compile", "--resolver=backtracking", "--output-file", str(golden_record_path), str(requirements_in_path)]
         result = subprocess.run(compile_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print("ERROR: pip-compile failed during initial generation.", file=sys.stderr); print(result.stderr, file=sys.stderr); sys.exit(1)
-        print("Successfully generated a new Golden Record.")
+        print("Successfully generated a new Golden Record for dependencies.")
         return
 
-    # --- Step 3: The Definitive Reconciliation Logic ---
-    print("Golden Record found. Checking for missing top-level dependencies...")
+    # --- Step 3: Reconcile existing Golden Record with pyproject.toml ---
+    print("Golden Record found. Checking for missing dependencies...")
     with open(golden_record_path, "r") as f:
-        existing_package_names = {get_package_name_from_line(line).lower() for line in f if line.strip() and not line.startswith('#') and get_package_name_from_line(line)}
+        existing_package_names = {get_package_name_from_line(line).lower() for line in f if line.strip() and get_package_name_from_line(line)}
 
     missing_top_level_deps = intended_dep_names - existing_package_names
-    
     if not missing_top_level_deps:
-        print("Golden Record is in sync with pyproject.toml. No new top-level dependencies found.")
+        print("Golden Record is in sync with pyproject.toml. No new tool dependencies found.")
         return
 
-    print(f"Found {len(missing_top_level_deps)} new top-level dependencies to add: {missing_top_level_deps}")
-    
+    print(f"Found {len(missing_top_level_deps)} new dependencies to add: {missing_top_level_deps}")
     with open(requirements_in_path, 'w') as f:
         with open(golden_record_path, 'r') as grf:
             f.write(grf.read())
@@ -77,13 +65,12 @@ def main():
         for new_pkg_name in missing_top_level_deps:
             f.write(f"{new_pkg_name}\n")
             
-    print("Re-compiling Golden Record to add new packages...")
+    print("Re-compiling Golden Record to add new dependencies...")
     recompile_cmd = ["pip-compile", "--resolver=backtracking", "--output-file", str(golden_record_path), str(requirements_in_path)]
     result = subprocess.run(recompile_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print("ERROR: pip-compile failed during reconciliation.", file=sys.stderr); print(result.stderr, file=sys.stderr); sys.exit(1)
-        
-    print("Golden Record successfully updated.")
+    print("Golden Record for dependencies successfully updated.")
 
 if __name__ == "__main__":
     main()

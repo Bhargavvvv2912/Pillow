@@ -120,27 +120,45 @@ class DependencyAgent:
         python_executable = str((venv_dir / "bin" / "python").resolve())
         project_dir = self.config.get("VALIDATION_CONFIG", {}).get("project_dir")
 
-        if isinstance(requirements_source, (Path, str)):
-            req_path = str(requirements_source.resolve())
-            pip_command = [python_executable, "-m", "pip", "install", "-r", req_path]
-        else:
-            temp_reqs_path = venv_dir / "temp_reqs.txt"
-            with open(temp_reqs_path, "w") as f: f.write("\n".join(requirements_source))
-            pip_command = [python_executable, "-m", "pip", "install", "-r", str(temp_reqs_path)]
-            
-        _, stderr_install, returncode = run_command(pip_command, cwd=project_dir)
-        if returncode != 0:
-            return False, None, f"Failed to install dependencies. Error: {stderr_install}"
+        # --- START OF DEFINITIVE, CORRECTED LOGIC ---
 
+        # STEP 1: Install the toolchain dependencies from the lock file.
+        print("--> Bootstrap Step 1: Installing toolchain dependencies...")
+        req_path = str(requirements_source.resolve())
+        pip_command_tools = [python_executable, "-m", "pip", "install", "-r", req_path]
+        
+        # We run this from the root, as req_path is absolute. CWD is not as critical here.
+        _, stderr_tools, returncode_tools = run_command(pip_command_tools) 
+        if returncode_tools != 0:
+            return False, None, f"Failed to install toolchain dependencies during bootstrap. Error: {stderr_tools}"
+
+        # STEP 2: Build and install the project itself, using the just-installed toolchain.
+        print("\n--> Bootstrap Step 2: Building and installing the project...")
+        # The command must be run from the correct working directory.
+        pip_command_project = [python_executable, "-m", "pip", "install", f"./{project_dir}"]
+        _, stderr_project, returncode_project = run_command(pip_command_project) # Run from root, pip installs the sub-directory
+        if returncode_project != 0:
+            return False, None, f"Failed to build/install the project during bootstrap. Error: {stderr_project}"
+        # --- END OF DEFINITIVE, CORRECTED LOGIC ---
+
+        print("\n--> Bootstrap Step 3: Running validation suite...")
         success, metrics, validation_output = validate_changes(python_executable, self.config, group_title="Running Validation on New Baseline")
         if not success:
             return False, None, validation_output
             
-        installed_packages, _, _ = run_command([python_executable, "-m", "pip", "freeze"], cwd=project_dir)
-        return True, {"metrics": metrics, "packages": self._prune_pip_freeze(installed_packages)}, None
+        # Freeze the environment to get the final list of packages.
+        installed_packages_output, _, _ = run_command([python_executable, "-m", "pip", "freeze"])
+        
+        # Exclude the project itself from the final requirements file.
+        project_name_to_exclude = self.config.get("PROJECT_NAME")
+        if not project_name_to_exclude:
+            final_packages = self._prune_pip_freeze(installed_packages_output)
+        else:
+            pruned_lines = self._prune_pip_freeze(installed_packages_output).split('\n')
+            final_lines = [line for line in pruned_lines if not line.lower().startswith(project_name_to_exclude.lower() + '==')]
+            final_packages = "\n".join(sorted(final_lines))
 
-
-    # In agent_logic.py
+        return True, {"metrics": metrics, "packages": final_packages}, None
 
     def run(self):
         if os.path.exists(self.config["METRICS_OUTPUT_FILE"]):
