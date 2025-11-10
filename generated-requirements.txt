@@ -6,7 +6,7 @@ coverage==7.11.3
 defusedxml==0.7.1
 docutils==0.22.3
 execnet==2.1.1
-idna==3.11
+idna==3.7
 iniconfig==2.3.0
 markdown2==2.5.4
 olefile==0.47
