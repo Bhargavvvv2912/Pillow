@@ -12,7 +12,7 @@ markdown2==2.5.4
 olefile==0.47
 packaging==26.0
 pluggy==1.6.0
-pybind11==3.0.1
+pybind11==3.0.2
 Pygments==2.19.2
 pyproject_hooks==1.2.0
 pyroma==5.0.1
