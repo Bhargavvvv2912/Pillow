@@ -1,4 +1,4 @@
-build==1.4.2
+build==1.4.3
 certifi==2026.2.25
 charset-normalizer==3.4.7
 check-manifest==0.51
