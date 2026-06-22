@@ -2,7 +2,7 @@ build==1.5.0
 certifi==2026.6.17
 charset-normalizer==3.4.7
 check-manifest==0.51
-coverage==7.14.1
+coverage==7.14.2
 defusedxml==0.7.1
 docutils==0.23
 execnet==2.1.2
@@ -16,7 +16,7 @@ pybind11==3.0.4
 Pygments==2.20.0
 pyproject_hooks==1.2.0
 pyroma==5.0.1
-pytest==9.1.0
+pytest==9.1.1
 pytest-cov==7.1.0
 pytest-timeout==2.4.0
 pytest-xdist==3.8.0
