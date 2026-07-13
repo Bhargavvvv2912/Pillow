@@ -2,7 +2,7 @@ build==1.5.1
 certifi==2026.6.17
 charset-normalizer==3.4.9
 check-manifest==0.51
-coverage==7.15.0
+coverage==7.15.1
 defusedxml==0.7.1
 docutils==0.23
 execnet==2.1.2
