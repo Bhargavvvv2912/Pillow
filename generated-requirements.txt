@@ -1,5 +1,5 @@
 build==1.5.1
-certifi==2026.6.17
+certifi==2026.7.22
 charset-normalizer==3.4.9
 check-manifest==0.51
 coverage==7.15.2
