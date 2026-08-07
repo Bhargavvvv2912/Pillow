@@ -2,7 +2,7 @@ build==1.5.1
 certifi==2026.7.22
 charset-normalizer==3.4.9
 check-manifest==0.51
-coverage==7.15.3
+coverage==7.15.4
 defusedxml==0.7.1
 docutils==0.23
 execnet==2.1.2
@@ -10,9 +10,9 @@ idna==3.18
 iniconfig==2.3.0
 markdown2==2.5.5
 olefile==0.47
-packaging==26.2
+packaging==26.3
 pluggy==1.6.0
-pybind11==3.0.4
+pybind11==3.1.0
 Pygments==2.20.0
 pyproject_hooks==1.2.0
 pyroma==5.0.1
