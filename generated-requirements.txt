@@ -22,5 +22,5 @@ pytest-cov==7.1.0
 pytest-timeout==2.5.0
 pytest-xdist==3.8.0
 requests==2.34.2
-trove-classifiers==2026.6.1.19
+trove-classifiers==2026.9.21.13
 urllib3==2.8.0
